@@ -1,0 +1,102 @@
+# ============================================================================
+# Personal KPI Dashboard — Weekly Engineer Growth Metrics
+# ============================================================================
+#
+# Schedule: Every Monday at 06:00 UTC
+#           = 08:00 Africa/Cairo (Egypt Standard Time, UTC+2).
+#           Cairo does NOT observe Daylight Saving Time, so this offset is
+#           constant year-round.  No DST adjustment needed.
+#
+# Manual trigger: Actions → "Personal KPI Dashboard" → Run workflow
+# ============================================================================
+
+name: Personal KPI Dashboard
+
+on:
+  schedule:
+    # Cron: minute hour dom month dow
+    - cron: "0 6 * * 1"   # Monday 06:00 UTC = Monday 08:00 Africa/Cairo
+  workflow_dispatch:       # Allow manual trigger from GitHub Actions UI
+    inputs:
+      dry_run:
+        description: "Print reports to logs instead of sending Slack DMs"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      period_days:
+        description: "Rolling window size in days"
+        required: false
+        default: "30"
+        type: string
+
+jobs:
+  run-kpi-report:
+    name: Generate & Deliver Engineer KPI Reports
+    runs-on: ubuntu-latest
+    timeout-minutes: 30   # Safety guard — kills hung API calls
+
+    steps:
+      # ---- 1. Checkout repo ----
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ---- 2. Set up Python ----
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: kpis/requirements.txt
+
+      # ---- 3. Install dependencies ----
+      - name: Install Python dependencies
+        run: pip install -r kpis/requirements.txt
+
+      # ---- 4. Run KPI pipeline ----
+      - name: Run KPI pipeline
+        run: |
+          PERIOD=${PERIOD_DAYS:-30}
+          DRY=${DRY_RUN:-false}
+          ARGS="--period_days $PERIOD --trend_days $PERIOD"
+          if [ "$DRY" = "true" ]; then
+            ARGS="$ARGS --dry_run"
+          fi
+          echo "Running: python kpis/src/main.py $ARGS"
+          python kpis/src/main.py $ARGS
+        env:
+          # ---- Jira ----
+          JIRA_BASE_URL:            ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL:               ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN:           ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_STORY_POINTS_FIELD:  ${{ secrets.JIRA_STORY_POINTS_FIELD }}
+
+          # ---- GitHub ----
+          GH_TOKEN:                 ${{ secrets.GH_TOKEN }}
+          GITHUB_REPO:              ${{ secrets.GITHUB_REPO }}
+          GITHUB_ORG:               ${{ secrets.GITHUB_ORG }}
+
+          # ---- Rollbar ----
+          ROLLBAR_TOKEN:            ${{ secrets.ROLLBAR_TOKEN }}
+          ROLLBAR_PROJECT:          ${{ secrets.ROLLBAR_PROJECT }}
+          ROLLBAR_ENV:              ${{ secrets.ROLLBAR_ENV }}
+
+          # ---- Slack ----
+          SLACK_BOT_TOKEN:          ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ADMIN_USER_ID:      ${{ secrets.SLACK_ADMIN_USER_ID }}
+
+          # ---- Workflow_dispatch overrides ----
+          PERIOD_DAYS:   ${{ github.event.inputs.period_days || '30' }}
+          DRY_RUN:       ${{ github.event.inputs.dry_run || 'false' }}
+
+      # ---- 5. Upload CSV artifacts ----
+      - name: Upload CSV reports as artifacts
+        if: always()   # Upload even if some engineers failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: kpi-reports-${{ github.run_id }}
+          path: /tmp/kpi_*.csv
+          retention-days: 90
+          if-no-files-found: warn
