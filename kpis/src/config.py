@@ -36,8 +36,8 @@ class Engineer:
     name: str
     jira_account_id: str
     github_login: str
-    slack_user_id: str
     rollbar_identity: str
+    google_sheet_tab: str   # Name of the worksheet tab for this engineer
 
 
 @dataclass
@@ -60,9 +60,9 @@ class AppConfig:
     rollbar_project: str = ""
     rollbar_env: str = "production"
 
-    # --- Slack ---
-    slack_bot_token: str = ""
-    slack_admin_user_id: str = ""
+    # --- Google Sheets ---
+    google_service_account_json: str = ""  # raw JSON string of service account key
+    google_sheet_id: str = ""              # spreadsheet ID from the URL
 
     # --- Engineers ---
     engineers: List[Engineer] = field(default_factory=list)
@@ -78,13 +78,17 @@ _REQUIRED_VARS: list[str] = [
     "JIRA_API_TOKEN",
     "JIRA_STORY_POINTS_FIELD",
     "GH_TOKEN",
-    "GITHUB_REPO",
-    "SLACK_BOT_TOKEN",
-    "SLACK_ADMIN_USER_ID",
+    "GH_REPO",
+]
+
+# Required for live runs only (skipped when --dry_run is used)
+_SHEETS_REQUIRED_VARS: list[str] = [
+    "GOOGLE_SERVICE_ACCOUNT_JSON",
+    "GOOGLE_SHEET_ID",
 ]
 
 _OPTIONAL_VARS: dict[str, str] = {
-    "GITHUB_ORG": "",
+    "GH_ORG": "",
     "ROLLBAR_TOKEN": "",
     "ROLLBAR_PROJECT": "",
     "ROLLBAR_ENV": "production",
@@ -113,6 +117,15 @@ def _validate_all_required() -> list[str]:
     return [v for v in _REQUIRED_VARS if not os.environ.get(v, "").strip()]
 
 
+def missing_sheets_vars() -> list[str]:
+    """Return list of missing Google Sheets variables (empty list = all present).
+
+    Called by main.py when not in dry_run mode to enforce that Sheets credentials
+    are present before attempting to write results.
+    """
+    return [v for v in _SHEETS_REQUIRED_VARS if not os.environ.get(v, "").strip()]
+
+
 def load_engineers(engineers_yml_path: Optional[Path] = None) -> List[Engineer]:
     """Load engineers from engineers.yml.
 
@@ -137,8 +150,8 @@ def load_engineers(engineers_yml_path: Optional[Path] = None) -> List[Engineer]:
                 name=entry["name"],
                 jira_account_id=entry.get("jira_account_id", ""),
                 github_login=entry.get("github_login", ""),
-                slack_user_id=entry.get("slack_user_id", ""),
                 rollbar_identity=entry.get("rollbar_identity", ""),
+                google_sheet_tab=entry.get("google_sheet_tab", entry["name"] + " KPI"),
             )
         )
 
@@ -170,15 +183,15 @@ def load_app_config(engineers_yml_path: Optional[Path] = None) -> AppConfig:
         jira_story_points_field=_require("JIRA_STORY_POINTS_FIELD"),
         # GitHub
         gh_token=_require("GH_TOKEN"),
-        github_repo=_require("GITHUB_REPO"),
-        github_org=_optional("GITHUB_ORG"),
+        github_repo=_require("GH_REPO"),
+        github_org=_optional("GH_ORG"),
         # Rollbar
         rollbar_token=_optional("ROLLBAR_TOKEN"),
         rollbar_project=_optional("ROLLBAR_PROJECT"),
         rollbar_env=_optional("ROLLBAR_ENV", "production"),
-        # Slack
-        slack_bot_token=_require("SLACK_BOT_TOKEN"),
-        slack_admin_user_id=_require("SLACK_ADMIN_USER_ID"),
+        # Google Sheets
+        google_service_account_json=_require("GOOGLE_SERVICE_ACCOUNT_JSON"),
+        google_sheet_id=_require("GOOGLE_SHEET_ID"),
         # Engineers
         engineers=engineers,
     )

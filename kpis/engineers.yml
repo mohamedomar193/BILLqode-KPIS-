@@ -2,21 +2,14 @@
 # Add or remove engineers here — no code changes required.
 #
 # Fields:
-#   name              : Display name used in reports and Slack messages
+#   name              : Display name used in reports and Google Sheets tab titles
 #   jira_account_id   : Stable Jira account ID (from /rest/api/3/myself or user admin)
 #   github_login      : GitHub username (case-insensitive, but use exact casing)
-#   slack_user_id     : Slack member ID starting with U (from user profile → "Copy member ID")
 #   rollbar_identity  : Email or username as it appears in Rollbar blame / commit author field
+#   google_sheet_tab  : Name of the worksheet tab in the shared Google Spreadsheet
 
 engineers:
-  - name: "Ahmed"
-    jira_account_id: "5d9abc123def456789012345"
-    github_login: "ahmed-dev"
-    slack_user_id: "U01ABCDE123"
-    rollbar_identity: "ahmed@yourcompany.com"
-
-  - name: "Sara"
-    jira_account_id: "5d9xyz987fed654321098765"
-    github_login: "sara-eng"
-    slack_user_id: "U02FGHIJ456"
-    rollbar_identity: "sara@yourcompany.com"
+  - name: Mohamed Omar
+    jira_account_id: "712020:b3cc2f6b-fcb5-4503-a053-291f6858f891"
+    github_login: "mohamedomar193"
+    rollbar_identity: "mohamed.omar.int@billqode.com"

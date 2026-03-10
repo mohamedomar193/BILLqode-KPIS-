@@ -3,17 +3,17 @@ KPI Pipeline Orchestrator — main entry point.
 
 Run:
     python kpis/src/main.py --period_days 30 --trend_days 30
-    python kpis/src/main.py --dry_run   # prints reports instead of Slack DMs
+    python kpis/src/main.py --dry_run   # prints reports instead of writing to Google Sheets
 
 Flow per engineer:
     1. Fetch data from GitHub (always), Jira (optional), Rollbar (optional)
     2. Compute 8 MetricResult objects (current + previous period each)
     3. Render Markdown report + write CSV
-    4. Send Slack DM to engineer
+    4. Write metrics to engineer's Google Sheet worksheet tab
     5. Collect success/failure status
 
 After all engineers:
-    Send admin summary DM (or print in dry_run mode).
+    Print admin summary to stdout / log (visible in GitHub Actions run log).
     Exit 0 if at least one report delivered; exit 1 if all failed.
 """
 
@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 # ---- Local imports (all paths relative to kpis/src/) ----
-from config import AppConfig, Engineer, load_app_config
+from config import AppConfig, Engineer, load_app_config, missing_sheets_vars
 from utils.logging import configure_logging, get_logger
 from utils.dates import get_periods, format_period
 from utils.safe_run import MetricResult, EngineerError
@@ -34,7 +34,7 @@ from utils.safe_run import MetricResult, EngineerError
 from clients.github_client import GitHubClient
 from clients.jira_client import JiraClient
 from clients.rollbar_client import RollbarClient
-from clients.slack_client import SlackClient
+from clients.google_sheets_client import GoogleSheetsClient
 
 from metrics import cycle_time
 from metrics import resolved_contribution
@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
         "--dry_run",
         action="store_true",
         default=False,
-        help="Print reports to stdout instead of sending Slack DMs.",
+        help="Print reports to stdout instead of writing to Google Sheets.",
     )
     parser.add_argument(
         "--output_dir",
@@ -161,11 +161,12 @@ def process_engineer(
     previous_period: Tuple,
     dry_run: bool,
     output_dir: str,
-    slack: SlackClient,
+    sheets: Optional[GoogleSheetsClient],
 ) -> bool:
     """Run the full pipeline for one engineer.
 
-    Returns True on success (report sent), False on fatal failure.
+    Returns True on success (report written / printed), False on fatal failure.
+    In dry_run mode ``sheets`` is None and no Sheets write is attempted.
     """
     eng_error = EngineerError(engineer_name=eng.name)
     curr_start, curr_end = current_period
@@ -460,10 +461,26 @@ def process_engineer(
         csv_path = write_csv(eng, metrics, current_period, previous_period, output_dir)
         logger.info("CSV saved: %s", csv_path)
 
-        success = slack.send_dm(eng.slack_user_id, md_report)
-        if not success and not dry_run:
-            logger.error("Failed to send Slack DM to %s (%s)", eng.name, eng.slack_user_id)
-            return False
+        if dry_run:
+            # Dry-run: print the full report to stdout (visible in Actions log).
+            # No Sheets credentials required.
+            print(md_report)
+            logger.info("[DRY RUN] Report printed for %s — Sheets write skipped", eng.name)
+        else:
+            success = sheets.write_report(
+                tab_name=eng.google_sheet_tab,
+                engineer_name=eng.name,
+                metrics=metrics,
+                current_period=current_period,
+                previous_period=previous_period,
+            )
+            if not success:
+                logger.error(
+                    "Failed to write Google Sheet report for %s (tab: %s)",
+                    eng.name,
+                    eng.google_sheet_tab,
+                )
+                return False
 
         logger.info("Report delivered for %s", eng.name)
         return True
@@ -509,8 +526,21 @@ def main() -> None:
         "Previous period: %s", format_period(*previous_period)
     )
 
-    # Initialise Slack client (shared across all engineers)
-    slack = SlackClient(bot_token=cfg.slack_bot_token, dry_run=args.dry_run)
+    # Initialise Google Sheets client (live runs only)
+    sheets: Optional[GoogleSheetsClient] = None
+    if not args.dry_run:
+        missing = missing_sheets_vars()
+        if missing:
+            logger.critical(
+                "Live run requires Google Sheets credentials but these are not set:\n%s\n"
+                "Use --dry_run to run without Google Sheets.",
+                "\n".join(f"  • {v}" for v in missing),
+            )
+            sys.exit(1)
+        sheets = GoogleSheetsClient(
+            service_account_json=cfg.google_service_account_json,
+            sheet_id=cfg.google_sheet_id,
+        )
 
     # Track results for admin summary
     engineer_results: Dict[str, Dict] = {}
@@ -524,7 +554,7 @@ def main() -> None:
                 previous_period=previous_period,
                 dry_run=args.dry_run,
                 output_dir=args.output_dir,
-                slack=slack,
+                sheets=sheets,
             )
             engineer_results[eng.name] = {"success": success}
         except Exception as exc:
@@ -533,15 +563,15 @@ def main() -> None:
             logger.debug(traceback.format_exc())
             engineer_results[eng.name] = {"success": False, "error": error_msg}
 
-    # ---- Admin summary ----
+    # ---- Admin summary (printed to stdout / GitHub Actions log) ----
     summary = render_admin_summary(engineer_results)
+    print("\n" + "=" * 70)
     if args.dry_run:
-        print("\n" + "=" * 70)
         print("[DRY RUN] Admin Summary")
-        print("=" * 70)
-        print(summary)
     else:
-        slack.send_dm(cfg.slack_admin_user_id, summary)
+        print("Admin Summary")
+    print("=" * 70)
+    print(summary)
 
     # ---- Exit code ----
     any_success = any(v.get("success") for v in engineer_results.values())

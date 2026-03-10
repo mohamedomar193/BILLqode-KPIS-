@@ -37,20 +37,36 @@ Go to **Settings → Secrets and variables → Actions → New repository secret
 | `JIRA_API_TOKEN` | Atlassian API token ([create here](https://id.atlassian.com/manage-profile/security)) | `ATATT3...` |
 | `JIRA_STORY_POINTS_FIELD` | Jira custom field ID for story points | `customfield_10016` |
 | `GH_TOKEN` | GitHub PAT with `repo` + `read:org` scopes | `ghp_...` |
-| `GITHUB_REPO` | Repository in `owner/repo` format | `myorg/myrepo` |
-| `GITHUB_ORG` | GitHub organization name (optional) | `myorg` |
+| `GH_REPO` | Repository in `owner/repo` format | `myorg/myrepo` |
+| `GH_ORG` | GitHub organization name (optional) | `myorg` |
 | `ROLLBAR_TOKEN` | Rollbar read-only project access token | `xxxxxxxx` |
 | `ROLLBAR_PROJECT` | Rollbar project ID (numeric) | `12345` |
 | `ROLLBAR_ENV` | Rollbar environment to query | `production` |
-| `SLACK_BOT_TOKEN` | Slack Bot OAuth token (xoxb-...) | `xoxb-...` |
-| `SLACK_ADMIN_USER_ID` | Slack member ID of the admin | `U01ADMINXXX` |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Full JSON content of a Google service account key file | `{"type":"service_account",...}` |
+| `GOOGLE_SHEET_ID` | Spreadsheet ID from the Google Sheets URL | `1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms` |
 
-### 2. Slack Bot Setup
+### 2. Google Sheets Setup
 
-1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps)
-2. Add OAuth scope: `chat:write`
-3. Install to your workspace and copy the **Bot User OAuth Token** (`xoxb-...`)
-4. The bot does NOT need to be invited to DM channels — Slack opens DMs automatically when posting to a user ID
+#### 2a. Create a Google Cloud service account
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) → **IAM & Admin → Service Accounts → Create Service Account**.
+2. Give it a name (e.g. `kpi-pipeline`), click **Create and Continue**, then **Done**.
+3. Click the service account → **Keys → Add Key → Create new key → JSON**.
+4. Download the JSON file — this is the value you will paste into `GOOGLE_SERVICE_ACCOUNT_JSON`.
+
+#### 2b. Enable the Sheets & Drive APIs
+
+In the same Google Cloud project, go to **APIs & Services → Enable APIs** and enable:
+- **Google Sheets API**
+- **Google Drive API**
+
+#### 2c. Create the spreadsheet and share it
+
+1. Create a new Google Spreadsheet (or use an existing one).
+2. Copy the **spreadsheet ID** from the URL — the long alphanumeric string between `/d/` and `/edit`. Paste it into `GOOGLE_SHEET_ID`.
+3. Click **Share** and add the service account email (visible on the service account page, looks like `kpi-pipeline@your-project.iam.gserviceaccount.com`) with **Editor** access.
+
+> **Privacy note:** Each engineer's metrics are written to their own worksheet tab named by their `google_sheet_tab` field. Engineers only see their own data if you share individual tabs — sharing at the spreadsheet level exposes all tabs.
 
 ### 3. Configure Engineers
 
@@ -59,10 +75,10 @@ Edit [`engineers.yml`](engineers.yml):
 ```yaml
 engineers:
   - name: "Ahmed"
-    jira_account_id: "5d9abc..."     # Jira account ID (stable, not username)
-    github_login: "ahmed-dev"        # GitHub username
-    slack_user_id: "U01ABCDE123"     # Slack member ID (from profile → "Copy member ID")
-    rollbar_identity: "ahmed@co.com" # Email as it appears in Rollbar blame
+    jira_account_id: "5d9abc..."        # Jira account ID (stable, not username)
+    github_login: "ahmed-dev"           # GitHub username
+    rollbar_identity: "ahmed@co.com"    # Email as it appears in Rollbar blame
+    google_sheet_tab: "Ahmed KPI"       # Worksheet tab name in the spreadsheet
 ```
 
 **To add an engineer:** Add a new entry block and push to main.
@@ -72,7 +88,8 @@ engineers:
 ### 4. First Run
 
 ```bash
-# Local smoke test (prints reports, no Slack calls)
+# Dry-run smoke test — Google Sheets credentials NOT required
+# Prints the full Markdown report to stdout; writes CSV to /tmp; no Sheets writes.
 cd d:/BILLQODE/Billqode\ KPIS
 pip install -r kpis/requirements.txt
 export JIRA_BASE_URL=https://yourorg.atlassian.net
@@ -80,11 +97,13 @@ export JIRA_EMAIL=you@co.com
 export JIRA_API_TOKEN=...
 export JIRA_STORY_POINTS_FIELD=customfield_10016
 export GH_TOKEN=ghp_...
-export GITHUB_REPO=owner/repo
-export SLACK_BOT_TOKEN=xoxb-...
-export SLACK_ADMIN_USER_ID=U01...
+export GH_REPO=owner/repo
 python kpis/src/main.py --dry_run
 ```
+
+> `GOOGLE_SERVICE_ACCOUNT_JSON` and `GOOGLE_SHEET_ID` are **only required for live runs**.
+> Omit them entirely when using `--dry_run` to test secrets, API connectivity, metric
+> computation, and report generation without a Google Cloud project.
 
 After confirming reports look correct, trigger the workflow manually:
 **Actions → Personal KPI Dashboard → Run workflow**
@@ -95,8 +114,8 @@ After confirming reports look correct, trigger the workflow manually:
 
 | Channel | Status | Notes |
 |---------|--------|-------|
-| **Slack DM** | ✅ Implemented | Primary output. Private per-engineer DM. |
-| Google Sheets | 🔲 TODO stub | Could append CSV rows to a per-engineer sheet via Sheets API |
+| **Google Sheets** | ✅ Implemented | Primary output. Each engineer has a dedicated worksheet tab. |
+| Slack DM | 🔲 Not used | `slack_client.py` remains in repo but is not called by the pipeline. |
 | Confluence | 🔲 TODO stub | Could create/update a personal page via Confluence REST API |
 
 To add a new output channel: implement a new module in `kpis/src/output/` and call it from `main.py` after `render_markdown`.

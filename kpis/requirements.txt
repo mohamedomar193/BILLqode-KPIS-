@@ -8,5 +8,9 @@ requests>=2.31
 jira>=3.5
 PyGithub>=2.1
 
+# Google Sheets
+gspread>=6.0
+google-auth>=2.0
+
 # Configuration
 pyyaml>=6.0
