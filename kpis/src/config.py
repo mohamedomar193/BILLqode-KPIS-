@@ -189,9 +189,9 @@ def load_app_config(engineers_yml_path: Optional[Path] = None) -> AppConfig:
         rollbar_token=_optional("ROLLBAR_TOKEN"),
         rollbar_project=_optional("ROLLBAR_PROJECT"),
         rollbar_env=_optional("ROLLBAR_ENV", "production"),
-        # Google Sheets
-        google_service_account_json=_require("GOOGLE_SERVICE_ACCOUNT_JSON"),
-        google_sheet_id=_require("GOOGLE_SHEET_ID"),
+        # Google Sheets (validated separately in main.py for live runs only)
+        google_service_account_json=_optional("GOOGLE_SERVICE_ACCOUNT_JSON"),
+        google_sheet_id=_optional("GOOGLE_SHEET_ID"),
         # Engineers
         engineers=engineers,
     )

@@ -59,13 +59,8 @@ jobs:
       - name: Run KPI pipeline
         run: |
           PERIOD=${PERIOD_DAYS:-30}
-          DRY=${DRY_RUN:-false}
-          ARGS="--period_days $PERIOD --trend_days $PERIOD"
-          if [ "$DRY" = "true" ]; then
-            ARGS="$ARGS --dry_run"
-          fi
-          echo "Running: python kpis/src/main.py $ARGS"
-          python kpis/src/main.py $ARGS
+          echo "Running: python kpis/src/main.py --period_days $PERIOD --trend_days $PERIOD --dry_run"
+          python kpis/src/main.py --period_days $PERIOD --trend_days $PERIOD --dry_run
         env:
           # ---- Jira ----
           JIRA_BASE_URL:            ${{ secrets.JIRA_BASE_URL }}
