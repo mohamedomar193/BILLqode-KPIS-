@@ -505,7 +505,7 @@ def process_engineer(
             # No Sheets credentials required; Discord delivery also skipped.
             print(md_report)
             logger.info("[DRY RUN] Report printed for %s — Sheets/Discord write skipped", eng.name)
-        else:
+        elif sheets is not None:
             sheets_ok = sheets.write_report(
                 tab_name=eng.google_sheet_tab,
                 engineer_name=eng.name,
@@ -520,6 +520,8 @@ def process_engineer(
                     eng.google_sheet_tab,
                 )
                 return {"success": False, "error": "Google Sheets write failed"}
+        else:
+            logger.info("Sheets not configured — skipping Sheets write for %s", eng.name)
 
         logger.info("Report computed for %s", eng.name)
         return {
@@ -572,21 +574,21 @@ def main() -> None:
         "Previous period: %s", format_period(*previous_period)
     )
 
-    # Initialise Google Sheets client (live runs only)
+    # Initialise Google Sheets client (live runs only, optional)
     sheets: Optional[GoogleSheetsClient] = None
     if not args.dry_run:
         missing = missing_sheets_vars()
         if missing:
-            logger.critical(
-                "Live run requires Google Sheets credentials but these are not set:\n%s\n"
-                "Use --dry_run to run without Google Sheets.",
-                "\n".join(f"  • {v}" for v in missing),
+            logger.warning(
+                "Google Sheets credentials not set (%s) — Sheets write will be skipped.\n"
+                "Set GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_SHEET_ID to enable.",
+                ", ".join(missing),
             )
-            sys.exit(1)
-        sheets = GoogleSheetsClient(
-            service_account_json=cfg.google_service_account_json,
-            sheet_id=cfg.google_sheet_id,
-        )
+        else:
+            sheets = GoogleSheetsClient(
+                service_account_json=cfg.google_service_account_json,
+                sheet_id=cfg.google_sheet_id,
+            )
 
     # Initialise Discord client (skipped in dry_run or when token absent)
     discord: Optional[DiscordClient] = None
