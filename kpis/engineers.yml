@@ -7,9 +7,20 @@
 #   github_login      : GitHub username (case-insensitive, but use exact casing)
 #   rollbar_identity  : Email or username as it appears in Rollbar blame / commit author field
 #   google_sheet_tab  : Name of the worksheet tab in the shared Google Spreadsheet
+#   discord_user_id   : Discord user ID (numeric snowflake) for DM delivery
+#
+# To find a Discord user ID: enable Developer Mode in Discord → right-click user → Copy User ID
 
 engineers:
   - name: Mohamed Omar
     jira_account_id: "712020:b3cc2f6b-fcb5-4503-a053-291f6858f891"
     github_login: "mohamedomar193"
     rollbar_identity: "mohamed.omar.int@billqode.com"
+    google_sheet_tab: "Mohamed Omar KPI"
+    discord_user_id: "1472553042095374357"   # Replace with real Discord user ID snowflake
+
+# Manager receives a consolidated team summary to this Discord channel.
+# discord_channel_id: numeric channel ID (right-click channel → Copy Channel ID)
+manager:
+  name: Head Manager
+  discord_channel_id: "YOUR_DISCORD_MANAGER_CHANNEL_ID"   # Replace with real channel ID

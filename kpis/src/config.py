@@ -37,7 +37,15 @@ class Engineer:
     jira_account_id: str
     github_login: str
     rollbar_identity: str
-    google_sheet_tab: str   # Name of the worksheet tab for this engineer
+    google_sheet_tab: str       # Name of the worksheet tab for this engineer
+    discord_user_id: str = ""   # Discord user ID snowflake for DM delivery
+
+
+@dataclass
+class Manager:
+    """Head manager who receives the consolidated team summary."""
+    name: str
+    discord_channel_id: str     # Discord channel ID to post the summary to
 
 
 @dataclass
@@ -64,8 +72,12 @@ class AppConfig:
     google_service_account_json: str = ""  # raw JSON string of service account key
     google_sheet_id: str = ""              # spreadsheet ID from the URL
 
-    # --- Engineers ---
+    # --- Discord ---
+    discord_bot_token: str = ""            # Bot token for DM and channel delivery
+
+    # --- Engineers / Manager ---
     engineers: List[Engineer] = field(default_factory=list)
+    manager: Optional[Manager] = None
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +104,7 @@ _OPTIONAL_VARS: dict[str, str] = {
     "ROLLBAR_TOKEN": "",
     "ROLLBAR_PROJECT": "",
     "ROLLBAR_ENV": "production",
+    "DISCORD_BOT_TOKEN": "",
 }
 
 
@@ -126,22 +139,27 @@ def missing_sheets_vars() -> list[str]:
     return [v for v in _SHEETS_REQUIRED_VARS if not os.environ.get(v, "").strip()]
 
 
-def load_engineers(engineers_yml_path: Optional[Path] = None) -> List[Engineer]:
-    """Load engineers from engineers.yml.
-
-    Defaults to kpis/engineers.yml relative to this file's location.
-    """
+def _load_yaml(engineers_yml_path: Optional[Path] = None) -> dict:
+    """Load and return the raw YAML dict from engineers.yml."""
     if engineers_yml_path is None:
         # kpis/src/config.py → kpis/engineers.yml
         engineers_yml_path = Path(__file__).parent.parent / "engineers.yml"
 
-    logger.info("Loading engineers from %s", engineers_yml_path)
+    logger.info("Loading roster from %s", engineers_yml_path)
 
     if not engineers_yml_path.exists():
         raise FileNotFoundError(f"engineers.yml not found at {engineers_yml_path}")
 
     with open(engineers_yml_path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
+        return yaml.safe_load(fh) or {}
+
+
+def load_engineers(engineers_yml_path: Optional[Path] = None) -> List[Engineer]:
+    """Load engineers from engineers.yml.
+
+    Defaults to kpis/engineers.yml relative to this file's location.
+    """
+    data = _load_yaml(engineers_yml_path)
 
     engineers: List[Engineer] = []
     for entry in data.get("engineers", []):
@@ -152,11 +170,24 @@ def load_engineers(engineers_yml_path: Optional[Path] = None) -> List[Engineer]:
                 github_login=entry.get("github_login", ""),
                 rollbar_identity=entry.get("rollbar_identity", ""),
                 google_sheet_tab=entry.get("google_sheet_tab", entry["name"] + " KPI"),
+                discord_user_id=entry.get("discord_user_id", ""),
             )
         )
 
     logger.info("Loaded %d engineers", len(engineers))
     return engineers
+
+
+def load_manager(engineers_yml_path: Optional[Path] = None) -> Optional[Manager]:
+    """Load the optional manager section from engineers.yml."""
+    data = _load_yaml(engineers_yml_path)
+    manager_data = data.get("manager")
+    if not manager_data:
+        return None
+    return Manager(
+        name=manager_data.get("name", "Manager"),
+        discord_channel_id=manager_data.get("discord_channel_id", ""),
+    )
 
 
 def load_app_config(engineers_yml_path: Optional[Path] = None) -> AppConfig:
@@ -174,6 +205,7 @@ def load_app_config(engineers_yml_path: Optional[Path] = None) -> AppConfig:
         )
 
     engineers = load_engineers(engineers_yml_path)
+    manager = load_manager(engineers_yml_path)
 
     return AppConfig(
         # Jira
@@ -192,6 +224,9 @@ def load_app_config(engineers_yml_path: Optional[Path] = None) -> AppConfig:
         # Google Sheets (validated separately in main.py for live runs only)
         google_service_account_json=_optional("GOOGLE_SERVICE_ACCOUNT_JSON"),
         google_sheet_id=_optional("GOOGLE_SHEET_ID"),
-        # Engineers
+        # Discord (optional; delivery skipped if token absent)
+        discord_bot_token=_optional("DISCORD_BOT_TOKEN"),
+        # Engineers / Manager
         engineers=engineers,
+        manager=manager,
     )

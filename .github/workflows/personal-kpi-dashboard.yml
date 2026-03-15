@@ -19,7 +19,7 @@ on:
   workflow_dispatch:       # Allow manual trigger from GitHub Actions UI
     inputs:
       dry_run:
-        description: "Print reports to logs instead of sending Slack DMs"
+        description: "Print reports to logs instead of sending Discord DMs / Sheets"
         required: false
         default: "false"
         type: choice
@@ -29,7 +29,7 @@ on:
       period_days:
         description: "Rolling window size in days"
         required: false
-        default: "30"
+        default: "90"
         type: string
 
 jobs:
@@ -58,9 +58,13 @@ jobs:
       # ---- 4. Run KPI pipeline ----
       - name: Run KPI pipeline
         run: |
-          PERIOD=${PERIOD_DAYS:-30}
-          echo "Running: python kpis/src/main.py --period_days $PERIOD --trend_days $PERIOD --dry_run"
-          python kpis/src/main.py --period_days $PERIOD --trend_days $PERIOD --dry_run
+          PERIOD=${PERIOD_DAYS:-90}
+          DRY_RUN_FLAG=""
+          if [ "$DRY_RUN" = "true" ]; then
+            DRY_RUN_FLAG="--dry_run"
+          fi
+          echo "Running: python kpis/src/main.py --period_days $PERIOD --trend_days $PERIOD $DRY_RUN_FLAG"
+          python kpis/src/main.py --period_days $PERIOD --trend_days $PERIOD $DRY_RUN_FLAG
         env:
           # ---- Jira ----
           JIRA_BASE_URL:            ${{ secrets.JIRA_BASE_URL }}
@@ -82,8 +86,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID:             ${{ secrets.GOOGLE_SHEET_ID }}
 
+          # ---- Discord ----
+          DISCORD_BOT_TOKEN:           ${{ secrets.DISCORD_BOT_TOKEN }}
+
           # ---- Workflow_dispatch overrides ----
-          PERIOD_DAYS:   ${{ github.event.inputs.period_days || '30' }}
+          PERIOD_DAYS:   ${{ github.event.inputs.period_days || '90' }}
           DRY_RUN:       ${{ github.event.inputs.dry_run || 'false' }}
 
       # ---- 5. Upload CSV artifacts ----
