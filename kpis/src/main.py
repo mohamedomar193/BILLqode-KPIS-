@@ -2,18 +2,20 @@
 KPI Pipeline Orchestrator — main entry point.
 
 Run:
-    python kpis/src/main.py --period_days 30 --trend_days 30
-    python kpis/src/main.py --dry_run   # prints reports instead of writing to Google Sheets
+    python kpis/src/main.py --period_days 90 --trend_days 90
+    python kpis/src/main.py --dry_run   # prints reports; skips Sheets + Discord
 
 Flow per engineer:
     1. Fetch data from GitHub (always), Jira (optional), Rollbar (optional)
     2. Compute 8 MetricResult objects (current + previous period each)
-    3. Render Markdown report + write CSV
-    4. Write metrics to engineer's Google Sheet worksheet tab
-    5. Collect success/failure status
+    3. Collect validation evidence (PR numbers, Jira keys, Rollbar IDs)
+    4. Render Markdown report + write CSV
+    5. Write metrics to engineer's Google Sheet worksheet tab (live runs only)
 
 After all engineers:
-    Print admin summary to stdout / log (visible in GitHub Actions run log).
+    6. Send each engineer their Discord DM report (if DISCORD_BOT_TOKEN set)
+    7. Send manager the team summary via Discord channel
+    8. Print admin summary to stdout (visible in GitHub Actions run log).
     Exit 0 if at least one report delivered; exit 1 if all failed.
 """
 
@@ -26,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 # ---- Local imports (all paths relative to kpis/src/) ----
-from config import AppConfig, Engineer, load_app_config, missing_sheets_vars
+from config import AppConfig, Engineer, Manager, load_app_config, missing_sheets_vars
 from utils.logging import configure_logging, get_logger
 from utils.dates import get_periods, format_period
 from utils.safe_run import MetricResult, EngineerError
@@ -35,6 +37,7 @@ from clients.github_client import GitHubClient
 from clients.jira_client import JiraClient
 from clients.rollbar_client import RollbarClient
 from clients.google_sheets_client import GoogleSheetsClient
+from delivery.discord_client import DiscordClient
 
 from metrics import cycle_time
 from metrics import resolved_contribution
@@ -46,6 +49,8 @@ from metrics import mttr
 from metrics import ci_reliability
 
 from output.render_markdown import render, render_admin_summary
+from output.render_discord import render_engineer_report as render_discord_engineer
+from output.render_discord import render_manager_summary as render_discord_manager
 from output.write_csv import write as write_csv
 
 logger = get_logger(__name__)
@@ -61,14 +66,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--period_days",
         type=int,
-        default=30,
-        help="Rolling window size in days (default: 30).",
+        default=90,
+        help="Rolling window size in days (default: 90).",
     )
     parser.add_argument(
         "--trend_days",
         type=int,
-        default=30,
-        help="Comparison window size in days (default: 30, same as period_days).",
+        default=90,
+        help="Comparison window size in days (default: 90, same as period_days).",
     )
     parser.add_argument(
         "--dry_run",
@@ -162,10 +167,22 @@ def process_engineer(
     dry_run: bool,
     output_dir: str,
     sheets: Optional[GoogleSheetsClient],
-) -> bool:
+) -> Optional[Dict]:
     """Run the full pipeline for one engineer.
 
-    Returns True on success (report written / printed), False on fatal failure.
+    Returns a result dict on success:
+        {
+            "success": True,
+            "metrics": List[MetricResult],
+            "evidence": {
+                "merged_pr_numbers": [int],
+                "reviewed_pr_numbers": [int],
+                "jira_ticket_keys": [str],
+                "rollbar_item_ids": [int],
+            },
+            "md_report": str,
+        }
+    Returns {"success": False, "error": str} on fatal failure.
     In dry_run mode ``sheets`` is None and no Sheets write is attempted.
     """
     eng_error = EngineerError(engineer_name=eng.name)
@@ -273,6 +290,28 @@ def process_engineer(
             rb_client.get_items, prev_start, prev_end,
             source_name="rollbar_items_prev", eng_error=eng_error,
         ) or []
+
+    # ----------------------------------------------------------------
+    # 2b. Build validation evidence from raw current-period data
+    # ----------------------------------------------------------------
+
+    # Rollbar items attributed to this engineer (for Errors Attributed evidence)
+    identity_lower = eng.rollbar_identity.lower()
+    attributed_rollbar_ids = [
+        item["id"]
+        for item in rb_items_curr
+        if RollbarClient.extract_blame_identity(item) is not None
+        and RollbarClient.extract_blame_identity(item).lower() == identity_lower
+    ]
+
+    evidence: Dict[str, List] = {
+        "merged_pr_numbers": [pr.number for pr in merged_prs_curr],
+        "reviewed_pr_numbers": [pr.number for pr in reviewed_prs_curr],
+        "jira_ticket_keys": [
+            getattr(issue, "key", str(issue)) for issue in jira_issues_curr
+        ],
+        "rollbar_item_ids": attributed_rollbar_ids,
+    }
 
     # ----------------------------------------------------------------
     # 3. Compute metrics for both periods, then merge
@@ -454,7 +493,7 @@ def process_engineer(
         metrics.append(_merge_periods(m_curr, m_prev))
 
     # ----------------------------------------------------------------
-    # 4. Render & deliver
+    # 4. Render & deliver (CSV + optional Google Sheets)
     # ----------------------------------------------------------------
     try:
         md_report = render(eng, metrics, current_period, previous_period)
@@ -462,33 +501,40 @@ def process_engineer(
         logger.info("CSV saved: %s", csv_path)
 
         if dry_run:
-            # Dry-run: print the full report to stdout (visible in Actions log).
-            # No Sheets credentials required.
+            # Dry-run: print the full Markdown report to stdout (Actions log).
+            # No Sheets credentials required; Discord delivery also skipped.
             print(md_report)
-            logger.info("[DRY RUN] Report printed for %s — Sheets write skipped", eng.name)
+            logger.info("[DRY RUN] Report printed for %s — Sheets/Discord write skipped", eng.name)
         else:
-            success = sheets.write_report(
+            sheets_ok = sheets.write_report(
                 tab_name=eng.google_sheet_tab,
                 engineer_name=eng.name,
                 metrics=metrics,
                 current_period=current_period,
                 previous_period=previous_period,
             )
-            if not success:
+            if not sheets_ok:
                 logger.error(
                     "Failed to write Google Sheet report for %s (tab: %s)",
                     eng.name,
                     eng.google_sheet_tab,
                 )
-                return False
+                return {"success": False, "error": "Google Sheets write failed"}
 
-        logger.info("Report delivered for %s", eng.name)
-        return True
+        logger.info("Report computed for %s", eng.name)
+        return {
+            "success": True,
+            "metrics": metrics,
+            "evidence": evidence,
+            "md_report": md_report,
+            "current_period": current_period,
+            "previous_period": previous_period,
+        }
 
     except Exception as exc:
         logger.error("Failed to render/deliver report for %s: %s", eng.name, exc)
         logger.debug(traceback.format_exc())
-        return False
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 # ---------------------------------------------------------------------------
@@ -542,12 +588,26 @@ def main() -> None:
             sheet_id=cfg.google_sheet_id,
         )
 
-    # Track results for admin summary
+    # Initialise Discord client (skipped in dry_run or when token absent)
+    discord: Optional[DiscordClient] = None
+    if not args.dry_run and cfg.discord_bot_token:
+        discord = DiscordClient(bot_token=cfg.discord_bot_token, dry_run=False)
+    elif args.dry_run and cfg.discord_bot_token:
+        discord = DiscordClient(bot_token=cfg.discord_bot_token, dry_run=True)
+    else:
+        logger.info(
+            "Discord delivery disabled — DISCORD_BOT_TOKEN not set%s",
+            " (dry_run)" if args.dry_run else "",
+        )
+
+    # ---- Per-engineer processing (KPI compute + CSV + Sheets) ----
     engineer_results: Dict[str, Dict] = {}
+    eng_map: Dict[str, Engineer] = {}
 
     for eng in cfg.engineers:
+        eng_map[eng.name] = eng
         try:
-            success = process_engineer(
+            result = process_engineer(
                 eng=eng,
                 cfg=cfg,
                 current_period=current_period,
@@ -556,12 +616,59 @@ def main() -> None:
                 output_dir=args.output_dir,
                 sheets=sheets,
             )
-            engineer_results[eng.name] = {"success": success}
+            engineer_results[eng.name] = result or {"success": False, "error": "no result"}
         except Exception as exc:
             error_msg = f"{type(exc).__name__}: {exc}"
             logger.error("Unexpected failure for engineer %s: %s", eng.name, error_msg)
             logger.debug(traceback.format_exc())
             engineer_results[eng.name] = {"success": False, "error": error_msg}
+
+    # ---- Discord delivery (after all engineers have been processed) ----
+    if discord is not None:
+        for eng in cfg.engineers:
+            result = engineer_results.get(eng.name, {})
+            if not result.get("success"):
+                logger.warning("Skipping Discord DM for %s — processing failed", eng.name)
+                continue
+
+            discord_report = render_discord_engineer(
+                engineer=eng,
+                metrics=result["metrics"],
+                current_period=result["current_period"],
+                previous_period=result["previous_period"],
+                evidence=result["evidence"],
+            )
+            discord.send_engineer_report(
+                discord_user_id=eng.discord_user_id,
+                report_markdown=discord_report,
+                engineer_name=eng.name,
+            )
+
+        # ---- Manager summary ----
+        if cfg.manager and cfg.manager.discord_channel_id:
+            manager_reports = [
+                {
+                    "eng": eng_map[name],
+                    "metrics": res.get("metrics", []),
+                    "evidence": res.get("evidence", {}),
+                    "current_period": res.get("current_period", current_period),
+                    "success": res.get("success", False),
+                    "error": res.get("error"),
+                }
+                for name, res in engineer_results.items()
+                if name in eng_map
+            ]
+            manager_summary = render_discord_manager(
+                engineer_reports=manager_reports,
+                manager=cfg.manager,
+            )
+            discord.send_manager_summary(
+                channel_id=cfg.manager.discord_channel_id,
+                summary_markdown=manager_summary,
+                manager_name=cfg.manager.name,
+            )
+        else:
+            logger.info("No manager Discord channel configured — skipping manager summary")
 
     # ---- Admin summary (printed to stdout / GitHub Actions log) ----
     summary = render_admin_summary(engineer_results)
