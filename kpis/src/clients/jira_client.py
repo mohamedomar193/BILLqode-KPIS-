@@ -55,11 +55,29 @@ class JiraClient:
             email:      Atlassian account email used for authentication.
             api_token:  Atlassian API token (from id.atlassian.com/manage-profile/security).
         """
-        self._jira = JIRA(
-            server=base_url,
-            basic_auth=(email, api_token),
-            options={"rest_api_version": 3},
-        )
+        try:
+            self._jira = JIRA(
+                server=base_url,
+                basic_auth=(email, api_token),
+                options={"rest_api_version": 3},
+            )
+        except JIRAError as exc:
+            status = getattr(exc, "status_code", None)
+            if status == 401:
+                raise PermissionError(
+                    f"Jira auth failed (401 Unauthorized) — verify JIRA_EMAIL and JIRA_API_TOKEN. "
+                    f"Token must be an Atlassian API token, not a password."
+                ) from exc
+            if status == 403:
+                raise PermissionError(
+                    f"Jira auth failed (403 Forbidden) — token is valid but account lacks "
+                    f"permission. Ensure the account has Browse Projects access."
+                ) from exc
+            # For other errors keep a short message (strip HTML body if present)
+            short = " ".join(str(exc).split())
+            if len(short) > 200:
+                short = short[:200] + "..."
+            raise JIRAError(short) from exc
         logger.info("JiraClient initialised for %s", base_url)
 
     # ------------------------------------------------------------------
@@ -112,8 +130,16 @@ class JiraClient:
                     expand="changelog",
                 )
             except JIRAError as exc:
-                logger.error("JiraClient.get_resolved_issues failed at offset %d: %s", start_at, exc)
-                raise
+                status = getattr(exc, "status_code", None)
+                if status == 401:
+                    raise PermissionError(
+                        "Jira auth failed (401 Unauthorized) — check JIRA_EMAIL and JIRA_API_TOKEN."
+                    ) from exc
+                short = " ".join(str(exc).split())
+                if len(short) > 200:
+                    short = short[:200] + "..."
+                logger.error("JiraClient.get_resolved_issues failed at offset %d: %s", start_at, short)
+                raise JIRAError(short) from exc
 
             issues.extend(batch)
             if len(batch) < _PAGE_SIZE:
